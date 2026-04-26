@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccstatuspanel"
+version = "0.1.0"
+description = "Linux system-tray indicator for claude.ai usage (5-hour session + weekly + reset timer)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "niallquinlan", email = "niallquinlan@gmail.com" }]
+keywords = ["claude", "anthropic", "system-tray", "appindicator", "linux"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Desktop Environment :: Gnome",
+]
+dependencies = [
+    "pystray>=0.19.5",
+    "Pillow>=10.0",
+    "curl_cffi>=0.7",
+    "pycookiecheat>=0.7.0",
+]
+
+[project.optional-dependencies]
+firefox = ["browser-cookie3>=0.19"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+ccstatuspanel = "ccstatuspanel.app:main"
+
+[project.urls]
+Homepage = "https://github.com/deepinthewoods/cc-usage-tray-icon"
+Issues = "https://github.com/deepinthewoods/cc-usage-tray-icon/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ccstatuspanel = ["assets/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
