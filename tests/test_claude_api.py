@@ -9,13 +9,17 @@ from ccstatuspanel.claude_api import (
 from ccstatuspanel.models import State
 
 
-def test_coerce_pct_handles_fraction_and_percent():
-    assert _coerce_pct(0.5) == 0.5
+def test_coerce_pct_treats_value_as_percent():
+    # The API always returns utilization as 0-100 percent — never a fraction.
+    assert _coerce_pct(0) == 0.0
+    assert _coerce_pct(1) == 0.01      # 1% — used to be wrongly 100%
+    assert _coerce_pct(0.5) == 0.005   # 0.5% — used to be wrongly 50%
     assert _coerce_pct(50) == 0.5
-    assert _coerce_pct(150) == 1.0
-    assert _coerce_pct(-0.1) == 0.0
+    assert _coerce_pct(100) == 1.0
+    assert _coerce_pct(150) == 1.0     # clamped
+    assert _coerce_pct(-0.1) == 0.0    # clamped
     assert _coerce_pct("nope") == 0.0  # type: ignore[arg-type]
-    assert _coerce_pct(None) == 0.0  # type: ignore[arg-type]
+    assert _coerce_pct(None) == 0.0    # type: ignore[arg-type]
 
 
 def test_parse_iso_handles_z_suffix():
@@ -32,10 +36,12 @@ def test_parse_iso_returns_none_on_garbage():
 
 
 def test_parse_usage_payload_happy_path():
+    # Real shape observed from claude.ai/api/organizations/{org}/usage —
+    # utilization is always 0-100 percent, never a fraction.
     payload = {
-        "five_hour": {"utilization": 0.47, "resets_at": "2026-04-26T15:30:00Z"},
-        "seven_day": {"utilization": 0.62},
-        "seven_day_opus": {"utilization": 0.10},
+        "five_hour": {"utilization": 47.0, "resets_at": "2026-04-26T15:30:00Z"},
+        "seven_day": {"utilization": 62.0},
+        "seven_day_opus": {"utilization": 10.0},
     }
     snap = parse_usage_payload(payload)
     assert snap.state == State.OK
@@ -45,14 +51,15 @@ def test_parse_usage_payload_happy_path():
     assert snap.resets_at is not None
 
 
-def test_parse_usage_payload_accepts_percent_form():
+def test_parse_usage_payload_low_utilization_is_low():
+    # Regression: at 1% usage the icon used to wrongly display 100%.
     payload = {
-        "five_hour": {"utilization": 47, "resets_at": "2026-04-26T15:30:00Z"},
-        "seven_day": {"utilization": 62},
+        "five_hour": {"utilization": 1.0, "resets_at": "2026-04-27T15:30:00Z"},
+        "seven_day": {"utilization": 0.5},
     }
     snap = parse_usage_payload(payload)
-    assert snap.session_pct == 0.47
-    assert snap.week_pct == 0.62
+    assert snap.session_pct == 0.01
+    assert snap.week_pct == 0.005
 
 
 def test_parse_usage_payload_missing_fields_uses_zero():

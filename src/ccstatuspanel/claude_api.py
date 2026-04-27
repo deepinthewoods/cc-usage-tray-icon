@@ -213,15 +213,17 @@ def _parse_iso(value: object) -> Optional[datetime]:
 
 
 def _coerce_pct(value: object) -> float:
-    """Accept either a 0-1 fraction or a 0-100 percent; return a 0-1 fraction."""
+    """Convert claude.ai's `utilization` (always a 0-100 percent) to a 0-1 fraction.
+
+    Earlier versions used a heuristic that treated any value <= 1.0 as
+    already-a-fraction. That broke at low usage: e.g. `utilization: 1.0`
+    means "1%" but was being displayed as 100%.
+    """
     if isinstance(value, bool):
         return 0.0
     if not isinstance(value, (int, float)):
         return 0.0
-    v = float(value)
-    if v > 1.0:
-        v = v / 100.0
-    return max(0.0, min(1.0, v))
+    return max(0.0, min(1.0, float(value) / 100.0))
 
 
 def parse_usage_payload(payload: dict) -> UsageSnapshot:
