@@ -40,6 +40,8 @@ def _format_tooltip(snap: UsageSnapshot, ui_show_timer: bool) -> str:
         f"Session {int(round(snap.session_pct * 100))}%",
         f"Week {int(round(snap.week_pct * 100))}%",
     ]
+    if snap.week_scoped_model:
+        parts.append(f"{snap.week_scoped_model} {int(round(snap.week_opus_pct * 100))}%")
     if ui_show_timer and snap.resets_at:
         parts.append(f"Resets in {_format_duration(snap.time_to_reset_seconds())}")
     suffix = " (degraded)" if snap.state == State.DEGRADED else ""
@@ -92,6 +94,7 @@ class Tray:
         menu = pystray.Menu(
             pystray.MenuItem(self._session_text, self._noop),
             pystray.MenuItem(self._week_text, self._noop),
+            pystray.MenuItem(self._scoped_text, self._noop, visible=self._scoped_visible),
             pystray.MenuItem(self._reset_text, self._noop),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Refresh now", self._refresh),
@@ -126,6 +129,18 @@ class Tray:
         if snap.state == State.STALE:
             return "Week: stale"
         return f"Week: {int(round(snap.week_pct * 100))}%"
+
+    def _scoped_visible(self, _item) -> bool:
+        # Only show the per-model weekly line when the API reports one and we
+        # have live data (claude.ai's model-scoped weekly cap, e.g. Sonnet/Opus).
+        with self._lock:
+            snap = self._snapshot
+        return snap.state != State.STALE and bool(snap.week_scoped_model)
+
+    def _scoped_text(self, _item) -> str:
+        with self._lock:
+            snap = self._snapshot
+        return f"Week ({snap.week_scoped_model}): {int(round(snap.week_opus_pct * 100))}%"
 
     def _reset_text(self, _item) -> str:
         with self._lock:

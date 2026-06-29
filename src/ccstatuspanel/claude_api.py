@@ -100,22 +100,48 @@ def discover_session_cookies(browser_cfg: BrowserConfig) -> Tuple[dict, str]:
             if cookie_file:
                 kwargs["cookie_file"] = cookie_file
             location = cookie_file or "default path"
+
+            # First attempt: let pycookiecheat pick the decryption key. When
+            # libsecret is importable it queries the GNOME keyring; otherwise it
+            # falls back to the hardcoded "peanuts" basic-store password.
+            cookies = None
             try:
                 cookies = chrome_cookies(CLAUDE_BASE, **kwargs)
             except Exception as e:
                 last_error = e
                 log.debug("Cookie lookup via %s (%s) failed: %s", label, location, e)
-                continue
+
+            # Fallback: force the "basic" keystore password. snap Chromium (and
+            # other browsers launched with --password-store=basic) encrypt cookies
+            # with "peanuts", NOT the GNOME keyring. But our app venv has PyGObject
+            # (for the tray backend), so pycookiecheat picks the keyring key and
+            # decryption fails with garbage. Retry with the basic-store password
+            # before moving on. Only accept the result if it actually decrypts to a
+            # session cookie, so keyring-based stores are never clobbered.
+            if not (cookies and "sessionKey" in cookies):
+                try:
+                    forced = chrome_cookies(CLAUDE_BASE, password=b"peanuts", **kwargs)
+                except TypeError:
+                    forced = None  # pycookiecheat too old for the `password` kwarg
+                except Exception as e:
+                    forced = None
+                    last_error = e
+                    log.debug("Basic-store retry via %s (%s) failed: %s", label, location, e)
+                if forced and "sessionKey" in forced:
+                    log.debug("Decrypted %s (%s) via basic-store password", label, location)
+                    cookies = forced
+
             if cookies and "sessionKey" in cookies:
                 log.info("Loaded claude.ai session cookie from %s (%s)", label, location)
                 return cookies, label
             # Opened the DB but no claude.ai session cookie present — common when the
             # user is logged in via a different browser. Surface so users can debug.
-            log.info(
-                "Opened %s cookie store at %s but no claude.ai sessionKey "
-                "(not logged in via this browser?)",
-                label, location,
-            )
+            if cookies is not None:
+                log.info(
+                    "Opened %s cookie store at %s but no claude.ai sessionKey "
+                    "(not logged in via this browser?)",
+                    label, location,
+                )
 
     # Optional Firefox fallback if installed
     if "firefox" in [b.lower() for b in browser_cfg.order]:
@@ -226,11 +252,61 @@ def _coerce_pct(value: object) -> float:
     return max(0.0, min(1.0, float(value) / 100.0))
 
 
-def parse_usage_payload(payload: dict) -> UsageSnapshot:
-    """Defensive parse — never raise on shape mismatch; return a usable snapshot."""
-    if not isinstance(payload, dict):
-        raise UsageFetchError(f"Usage payload is not an object: {type(payload).__name__}")
+def _find_limit(limits: list, kind: str) -> Optional[dict]:
+    """Return the first entry in claude.ai's `limits[]` with the given `kind`."""
+    for item in limits:
+        if isinstance(item, dict) and item.get("kind") == kind:
+            return item
+    return None
 
+
+def _parse_from_limits(payload: dict, limits: list) -> UsageSnapshot:
+    """Parse the new canonical `limits[]` array.
+
+    Each entry looks like:
+        {"kind": "session"|"weekly_all"|"weekly_scoped", "group": ..., "percent": 0-100,
+         "severity": ..., "resets_at": ISO8601, "scope": {"model": {"display_name": ...}}}
+    Falls back to the legacy top-level buckets for any limit kind that is absent.
+    """
+    five = payload.get("five_hour") if isinstance(payload.get("five_hour"), dict) else {}
+    seven = payload.get("seven_day") if isinstance(payload.get("seven_day"), dict) else {}
+
+    session = _find_limit(limits, "session")
+    weekly_all = _find_limit(limits, "weekly_all")
+    weekly_scoped = _find_limit(limits, "weekly_scoped")
+
+    if session is not None:
+        session_pct = _coerce_pct(session.get("percent", 0))
+    else:
+        session_pct = _coerce_pct(five.get("utilization", five.get("percent", 0)))
+
+    if weekly_all is not None:
+        week_pct = _coerce_pct(weekly_all.get("percent", 0))
+    else:
+        week_pct = _coerce_pct(seven.get("utilization", seven.get("percent", 0)))
+
+    week_opus_pct = 0.0
+    week_scoped_model = ""
+    if weekly_scoped is not None:
+        week_opus_pct = _coerce_pct(weekly_scoped.get("percent", 0))
+        model = (weekly_scoped.get("scope") or {}).get("model") or {}
+        week_scoped_model = model.get("display_name") or ""
+
+    resets_raw = (session or {}).get("resets_at") or five.get("resets_at") or five.get("reset_at")
+    return UsageSnapshot(
+        session_pct=session_pct,
+        week_pct=week_pct,
+        week_opus_pct=week_opus_pct,
+        week_scoped_model=week_scoped_model,
+        resets_at=_parse_iso(resets_raw),
+        state=State.OK,
+        error_msg="",
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+
+def _parse_from_legacy(payload: dict) -> UsageSnapshot:
+    """Parse the legacy top-level buckets (five_hour / seven_day / seven_day_opus)."""
     five = payload.get("five_hour") or {}
     seven = payload.get("seven_day") or {}
     seven_opus = payload.get("seven_day_opus") or {}
@@ -242,11 +318,28 @@ def parse_usage_payload(payload: dict) -> UsageSnapshot:
         session_pct=_coerce_pct(five.get("utilization", five.get("percent", 0))),
         week_pct=_coerce_pct(seven.get("utilization", seven.get("percent", 0))),
         week_opus_pct=_coerce_pct(seven_opus.get("utilization", seven_opus.get("percent", 0))),
+        week_scoped_model="Opus" if seven_opus else "",
         resets_at=_parse_iso(five.get("resets_at") or five.get("reset_at") or five.get("resetAt")),
         state=State.OK,
         error_msg="",
         fetched_at=datetime.now(timezone.utc),
     )
+
+
+def parse_usage_payload(payload: dict) -> UsageSnapshot:
+    """Defensive parse — never raise on shape mismatch; return a usable snapshot.
+
+    Prefers claude.ai's newer `limits[]` array (which carries the model-scoped
+    weekly cap that replaced the now-often-null `seven_day_opus` bucket) and falls
+    back to the legacy top-level buckets when `limits[]` is absent.
+    """
+    if not isinstance(payload, dict):
+        raise UsageFetchError(f"Usage payload is not an object: {type(payload).__name__}")
+
+    limits = payload.get("limits")
+    if isinstance(limits, list) and any(isinstance(x, dict) for x in limits):
+        return _parse_from_limits(payload, limits)
+    return _parse_from_legacy(payload)
 
 
 def fetch_usage(browser_cfg: BrowserConfig) -> UsageSnapshot:

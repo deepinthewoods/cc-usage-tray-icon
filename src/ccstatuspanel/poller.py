@@ -111,6 +111,7 @@ class Poller:
             session_pct=self._last_snapshot.session_pct if keep_values else 0.0,
             week_pct=self._last_snapshot.week_pct if keep_values else 0.0,
             week_opus_pct=self._last_snapshot.week_opus_pct if keep_values else 0.0,
+            week_scoped_model=self._last_snapshot.week_scoped_model if keep_values else "",
             resets_at=self._last_snapshot.resets_at if keep_values else None,
             state=new_state,
             error_msg=str(last_error),

@@ -16,7 +16,11 @@ class State(str, Enum):
 class UsageSnapshot:
     session_pct: float = 0.0
     week_pct: float = 0.0
+    # Per-model weekly cap. Historically Opus-specific (the old `seven_day_opus`
+    # bucket); claude.ai now exposes it as a generic model-scoped weekly limit, so
+    # `week_scoped_model` names which model it currently applies to (e.g. "Sonnet").
     week_opus_pct: float = 0.0
+    week_scoped_model: str = ""
     resets_at: Optional[datetime] = None
     state: State = State.STALE
     error_msg: str = ""

@@ -2,17 +2,38 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
+import tempfile
+from pathlib import Path
 
 from . import __version__
-from .config import load_config
+from .config import CACHE_DIR, load_config
 from .installer import install_desktop_entries, uninstall_desktop_entries
 from .notify import notify
 from .poller import Poller
 from .tray import Tray
 
 log = logging.getLogger("ccstatuspanel")
+
+
+def _redirect_tempdir_off_tmp() -> None:
+    """Point Python's temp dir at a non-/tmp location for the tray icon.
+
+    pystray writes the tray icon PNG via ``tempfile.mktemp()`` (-> /tmp). GNOME's
+    AppIndicator host (libayatana) refuses to load icon resources from /tmp
+    ("Using '/tmp' paths in SNAP environment will lead to unreadable resources"),
+    so the icon never renders. Writing it under XDG_RUNTIME_DIR (falling back to
+    the cache dir) gives a path the shell will actually read.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    icon_dir = (Path(runtime) / "ccstatuspanel") if runtime else (CACHE_DIR / "tmp")
+    try:
+        icon_dir.mkdir(parents=True, exist_ok=True)
+        tempfile.tempdir = str(icon_dir)
+    except OSError as e:
+        log.warning("Could not set icon temp dir %s, leaving default: %s", icon_dir, e)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -65,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         log.error("Failed to load config: %s", e)
         return 2
+
+    _redirect_tempdir_off_tmp()
 
     tray_holder: dict = {}
 
